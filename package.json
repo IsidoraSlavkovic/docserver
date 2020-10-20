@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "ejs": "3.1.5",
+    "sanitize-html": "2.1.0",
+    "showdown": "1.9.1",
+    "showdown-highlight": "2.1.5",
+    "yargs": "16.1.0"
+  }
+}
