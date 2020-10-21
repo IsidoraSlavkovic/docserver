@@ -6,13 +6,13 @@ markdown are served raw.
 
 Build with:
 
-```
+```shell
 bazel build :main
 ```
 
 [Build and] Run with:
 
-```
+```shell
 bazel run :main -- --dir=/tmp/clone_here --port=12345                \
   --main_template_html_path=$PWD/main_template.ejs                   \
   --error_template_html_path=$PWD/error_template.ejs                 \
