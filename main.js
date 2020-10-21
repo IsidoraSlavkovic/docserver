@@ -1,6 +1,7 @@
 const ejs = require('ejs');
 const fs = require('fs');
 const git = require('isomorphic-git')
+const gitHttp = require('isomorphic-git/http/node')
 const http = require('http');
 const mime = require('mime-types')
 const path = require('path');
@@ -11,21 +12,52 @@ const showdownHighlight = require('showdown-highlight');
 const url = require('url');
 const yargs = require('yargs');
 
-// TODO: Add support for using a git repository as the source instead of a
-//   (local) directory. Do this by cloning and periodically pulling.
-
 // TODO: Add a LRU cache with adjustable (via flag) size limit in bytes.
 
 const argv = yargs
   .option('port', {
     description: 'TCP port to serve HTTP on.',
     type: 'number',
-    default: 80
+    default: 80,
   })
   .option('dir', {
-    description: 'Direcotry to serve from.',
+    description: 'Directory to clone git to and serve from.',
     type: 'string',
-    default: '.'
+    default: '.',
+  })
+  .option('git_pull_interval_sec', {
+    description: 'Git pulling interval in seconds.',
+    type: 'number',
+    default: 60,
+  })
+  .option('git_repo_url', {
+    description: 'URL of the Git repository to watch and serve from.',
+    type: 'string',
+    default: 'https://github.com/IsidoraSlavkovic/docserver.git',
+  })
+  .option('git_repo_branch', {
+    description:
+        'The branch to watch. If not specified, the defualt "main branch" ' +
+        'of the repository is used.',
+    type: 'string',
+    default: null,
+  })
+  .option('git_auth_username', {
+    description: 'Git repository credentials - username.',
+    type: 'string',
+    default: null,
+  })
+  .option('git_auth_pass', {
+    description:
+        'Git repository credentials - password. Takes precedence over ' +
+        '--git_auth_pass_file.',
+    type: 'string',
+    default: null,
+  })
+  .option('git_auth_pass_file', {
+    description: 'Git repository credentials - path to a password file.',
+    type: 'string',
+    default: null,
   })
   .option('main_template_html_path', {
     description:
@@ -61,11 +93,99 @@ const argv = yargs
 // ../.././a/b/c 
 argv.dir = path.resolve(argv.dir)
 
-// TODO: Add some more extensions, like showdown-toc and katex-latex. See this
-//   list: https://github.com/showdownjs/showdown/wiki#community
-const globalConverter = new showdown.Converter({
-  extensions: [showdownHighlight]
-});
+class GitRepo {
+  // Repo url.
+  #url
+  // Branch to use.
+  #ref
+  // Auth object as used by onAuth in git.clone.
+  #auth
+  // Clone dir.
+  #dir
+
+  constructor(url, branch, dir, username, passStr, passFile) {
+    this.#url = url;
+    this.#ref = branch;
+    this.#dir = dir;
+    this.#auth = null;
+    
+    let password = null;
+    if (passStr) {
+      password = passStr;
+    } else if (passFile) {
+      try {
+        password = fs.readFileSync(passFile, 'utf8');
+      } catch (e) {
+        console.log(`Failed to read Git password file "${passFile}": ${e}`);
+        process.exit(-1);
+      }
+    }
+
+    if (username || password) {
+      this.#auth = Object.assign({},
+        username && {username},
+        password && {password},
+      );
+    }
+  }
+
+  async clone() {
+    console.log(`Cloning git repository: ${this.#url}`);
+    try {
+      await git.clone({
+        fs,
+        http: gitHttp,
+        onAuth: url => {
+          return this.#auth;
+        },
+        ref: this.#ref,
+        dir: this.#dir,
+        url: this.#url,
+        singleBranch: true,
+      });
+    } catch(e) {
+      console.log(`Failed cloning: ${e}`);
+      return false;
+    }
+    console.log('Done cloning.');
+    return true;
+  }
+
+  async pull() {
+    console.log(`Pulling git repository: ${this.#url}`);
+    try {
+      await git.pull({
+        fs,
+        http: gitHttp,
+        dir: this.#dir,
+        singleBranch: true,
+        author: {
+          name: this.#auth.username,
+        }
+      });
+    } catch(e) {
+      console.log(`Failed pulling: ${e}`);
+      return false;
+    }
+    console.log('Done pulling.');
+    return true;
+  }
+}
+
+function InitGitFromFlagsOrDie() {
+  repo = new GitRepo(argv.git_repo_url, argv.git_repo_branch,
+  argv.dir, argv.git_auth_username,
+  argv.git_auth_pass, argv.git_auth_pass_file);
+
+  if (!repo.clone()) {
+    console.log('Nothing to serve, exiting.');
+    process.exit(-1);
+  }
+
+  setInterval(() => {
+    repo.pull();
+  }, argv.git_pull_interval_sec * 1000);
+}
 
 function InitTemplateOrDie(templateFilePath) {
   try {
@@ -79,6 +199,12 @@ function InitTemplateOrDie(templateFilePath) {
 
 const tplHtmlMainCompiled = InitTemplateOrDie(argv.main_template_html_path);
 const tplHtmlErrorCompiled = InitTemplateOrDie(argv.error_template_html_path);
+
+// TODO: Add some more extensions, like showdown-toc and katex-latex. See this
+//   list: https://github.com/showdownjs/showdown/wiki#community
+const globalConverter = new showdown.Converter({
+  extensions: [showdownHighlight]
+});
 
 function RespondWithErrorHtml(res, errorCode, msg) {
   const html = tplHtmlErrorCompiled(Object.assign({},{
@@ -124,6 +250,8 @@ function RespondWithValidFileContent(res, filename, fileContent) {
       return res.end(fileContent);
   }
 }
+
+InitGitFromFlagsOrDie();
 
 http.createServer(function (req, res) {
   const queryUrl = url.parse(req.url, true);

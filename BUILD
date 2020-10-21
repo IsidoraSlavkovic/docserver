@@ -5,6 +5,7 @@ nodejs_binary(
   entry_point = ":main.js",
   data = [
     "@npm//ejs",
+    "@npm//isomorphic-git",
     "@npm//mime-types",
     "@npm//sanitize-html",
     "@npm//showdown",
