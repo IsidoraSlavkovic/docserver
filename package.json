@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "ejs": "3.1.5",
+    "mime-types": "2.1.27",
     "sanitize-html": "2.1.0",
     "showdown": "1.9.1",
     "showdown-highlight": "2.1.5",

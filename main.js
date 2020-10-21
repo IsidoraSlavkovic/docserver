@@ -1,6 +1,8 @@
 const ejs = require('ejs');
 const fs = require('fs');
+const git = require('isomorphic-git')
 const http = require('http');
+const mime = require('mime-types')
 const path = require('path');
 const process = require('process');
 const sanitizeHtml = require('sanitize-html');
@@ -37,7 +39,7 @@ const argv = yargs
   })
   .option('error_template_html_path', {
     description:
-        'Path to the main template HTML file which should containt the ' +
+        'Path to the error template HTML file which should containt the ' +
         'following EJS tags:\n' +
         '<%= title %>     - Page title\n' +
         '<%= errorCode %> - (optional) HTTP error code\n' +
@@ -53,6 +55,11 @@ const argv = yargs
   .help()
   .alias('help', 'h')
   .argv;
+
+// Resolve --dir to an absolute path to use to prefix-match the requested paths
+// to avoid exploting docserver to read files outside of --dir.
+// ../.././a/b/c 
+argv.dir = path.resolve(argv.dir)
 
 // TODO: Add some more extensions, like showdown-toc and katex-latex. See this
 //   list: https://github.com/showdownjs/showdown/wiki#community
@@ -79,7 +86,7 @@ function RespondWithErrorHtml(res, errorCode, msg) {
     errorCode: errorCode,
     msg: msg,
   }));
-  res.writeHead(404, {'Content-Type': 'text/html'});
+  res.writeHead(404, {'Content-Type': mime.contentType('text/html')});
   return res.end(html);
 }
 
@@ -97,36 +104,47 @@ function RenderMarkdownHtmlPage(pageTitle, markdownStr) {
   });
 }
 
-function RespondToMarkdown(res, pageTitle, fileContent) {
-  try {
-    var html = RenderMarkdownHtmlPage(pageTitle, fileContent);
-  } catch (e) {
-    return RespondWithErrorHtml(res, 500, `Server Error: ${e}`);
+function RespondWithValidFileContent(res, filename, fileContent) {
+  const mimeType = mime.lookup(filename)
+  const basename = path.basename(filename);
+
+  switch (mimeType) {
+    case "text/markdown":
+      try {
+        var html = RenderMarkdownHtmlPage(
+          basename, fileContent.toString('utf-8'));
+      } catch (e) {
+        return RespondWithErrorHtml(res, 500, `Server Error: ${e}`);
+      }
+      res.writeHead(200, {'Content-Type': mime.contentType('text/html')});
+      return res.end(html);
+    default:
+      // Respond raw.
+      res.writeHead(200, {'Content-Type': mime.contentType(mimeType)});
+      return res.end(fileContent);
   }
-  res.writeHead(200, {'Content-Type': 'text/html'});
-  return res.end(html);
 }
 
 http.createServer(function (req, res) {
   const queryUrl = url.parse(req.url, true);
+  // argv.dir is absolute path here thanks to path.resolve above.
   const filename = path.join(argv.dir, queryUrl.pathname);
-  const basename = path.basename(filename);
-  const extension = path.extname(basename).toLowerCase();
   console.log(`Request for: ${filename}`);
 
+  // This is a check to avoid the following situation:
+  //  argv.dir: /a/b/c
+  //  queryUrl: ../../../etc/passwd
+  //  filename: /etc/passwd
+  if (!filename.startsWith(argv.dir)) {
+    return RespondWithErrorHtml(res, 403, `Hey! That's forbidden, play nice!`); 
+  }
+
   try {
-    var fileContent = fs.readFileSync(filename, 'utf8');
+    var fileContent = fs.readFileSync(filename);
   } catch (e) {
     return RespondWithErrorHtml(res, 404, `Can't find: ${queryUrl.pathname}`);
   }
 
-  // TODO: Add support for other file types.
-  switch (extension) {
-    case ".md":
-      RespondToMarkdown(res, basename, fileContent)
-      break;
-    default:
-      return RespondWithErrorHtml(res, 501, `Sorry, I don't know how to treat files ending with extension "${extension}" yet.`);
-  }
+  return RespondWithValidFileContent(res, filename, fileContent)
 
 }).listen(argv.port);
